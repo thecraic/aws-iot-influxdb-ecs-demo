@@ -94,7 +94,7 @@ Open the AWS console and go to [AWS IoT Core](https://console.aws.amazon.com/iot
 Open the Test menu and subscribe to the topic we have specified (`/pressure/data`). You will see the traffic arrive from the devices.
 
 <center>
-<img src="images/AWS_IoT-test.png" width="800" />
+<img src="images/AWS_IoT-Test.png" width="800" />
 </center>
 
 
