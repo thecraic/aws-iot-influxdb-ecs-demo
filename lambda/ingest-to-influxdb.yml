@@ -1,0 +1,140 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates IoT Rule to trigger a Lambda function to write messages to influxdb
+Parameters:
+  NetworkStack:
+    Type: String
+    Default: base-vpc-network
+    Description: The name of the network where we deploy these resources
+  EnvironmentName:
+    Type: String
+    Default: demo
+    Description: The name of the environment to add this function to
+
+Resources:
+
+  DynamoDBMetaDataTable: 
+    Type: "AWS::DynamoDB::Table"
+    Properties: 
+      AttributeDefinitions: 
+        - 
+          AttributeName: "metakey"
+          AttributeType: "S"
+      KeySchema: 
+        - 
+          AttributeName: "metakey"
+          KeyType: "HASH"
+      ProvisionedThroughput: 
+        ReadCapacityUnits: "5"
+        WriteCapacityUnits: "5"
+      TableName: !Sub ${EnvironmentName}-DeviceMetaData
+
+  #
+  # IAM role to be used by lambda functions for execution
+  #
+  LambdaExecutionRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+            Action:
+            - sts:AssumeRole
+        Path: "/"
+        Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+              - "logs:CreateLogGroup"
+              - "logs:CreateLogStream"
+              - "logs:PutLogEvents"
+              - 'ec2:AttachNetworkInterface'
+              - 'ec2:CreateNetworkInterface'
+              - 'ec2:CreateNetworkInterfacePermission'
+              - 'ec2:DeleteNetworkInterface'
+              - 'ec2:DeleteNetworkInterfacePermission'
+              - 'ec2:Describe*'
+              - 'ec2:DetachNetworkInterface'
+              Resource: '*'
+            - Effect: Allow
+              Action:
+              - "dynamodb:*"
+              Resource: !GetAtt DynamoDBMetaDataTable.Arn
+
+  # Lambda to dispatch scheduled jobs -->Runner Lambda
+  # Executed a new runner in parallel for each job 
+  IngestToInfluxDBLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code: 
+        ZipFile: !Sub |
+          exports.handler = async (event) => {
+              const response = {
+                  statusCode: 200,
+                  body: JSON.stringify('Hello from Lambda!'),
+              };
+              return response;
+          };
+      FunctionName: IngestToInfluxDB
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: nodejs12.x
+      Timeout: 300
+      VpcConfig: 
+        SecurityGroupIds: 
+          - Fn::ImportValue: !Sub ${EnvironmentName}:ContainerSecurityGroup
+        SubnetIds: 
+          - Fn::ImportValue: !Sub ${NetworkStack}:PrivateSubnetOne
+          - Fn::ImportValue: !Sub ${NetworkStack}:PrivateSubnetTwo
+      Environment:
+        Variables:
+            INFLUXDB: telemetry
+            INFLUXDBHOST: !Sub influx.${EnvironmentName}
+            INFLUXDBPORT: 8086
+            INFLUXDBPWD: telemetry
+            INFLUXDBUSRNAME: telemetry
+            DYNAMODB_TABLE: !Sub ${EnvironmentName}-DeviceMetaData
+
+
+  LambdaIngestToInfluxDBTopicRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: LambdaIngestToInfluxDBTopicRule
+      TopicRulePayload:
+        RuleDisabled: false
+        Sql: SELECT * FROM '/pressure/data' 
+        Actions:
+          - Lambda:
+              FunctionArn: !GetAtt IngestToInfluxDBLambda.Arn
+
+  # Permission to allow IoT to invoke the Lambda function
+  EventsLambdaDispatcherPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      SourceArn: !Join [ "", [ "arn:aws:iot:", !Ref "AWS::Region", ":", !Ref "AWS::AccountId", ":rule/", !Ref "LambdaIngestToInfluxDBTopicRule" ] ]
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref IngestToInfluxDBLambda
+      Principal: iot.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+Outputs:
+  DynamoDBMetaDataTable:
+    Description: DynamoDB Table to store device  metadata
+    Value: 
+      Fn::GetAtt: DynamoDBMetaDataTable.Arn
+    Export:
+        Name: DynamoDBMetaDataTable
+
+  IngestToInfluxDBLambda:
+      Description: Function to ingest messages to influxdb service
+      Value: 
+        Fn::GetAtt: IngestToInfluxDBLambda.Arn
+      Export:
+          Name: IngestToInfluxDBLambda

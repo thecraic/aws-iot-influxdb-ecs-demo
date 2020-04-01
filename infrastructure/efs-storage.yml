@@ -1,0 +1,60 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy an EFS with two mount targets into the target network.
+Parameters:
+    NetworkStack:
+        Type: String
+        Default: base-vpc-network
+        Description: The name of the network where we deploy these resources
+    EnvironmentName:
+      Type: String
+      Default: demo
+      Description: The name of the environment to add this load balancer to
+
+Resources:
+    EFSSecurityGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+            VpcId: 
+                Fn::ImportValue: !Sub ${NetworkStack}:VpcId
+            GroupName: EfsPrivateSecurityGroup
+            GroupDescription: Security group for EFS mount 
+            SecurityGroupIngress:
+            - IpProtocol: tcp
+              FromPort: 2049
+              ToPort: 2049
+              SourceSecurityGroupId: 
+                Fn::ImportValue: !Sub ${EnvironmentName}:ContainerSecurityGroup
+            SecurityGroupEgress:
+            - IpProtocol: -1
+              CidrIp: 0.0.0.0/0
+    ElasticFileSystem:
+        Type: AWS::EFS::FileSystem
+        Properties:
+            Encrypted: true
+            PerformanceMode: generalPurpose
+    ElasticFileSystemMountTarget0:
+        Type: AWS::EFS::MountTarget
+        Properties:
+            FileSystemId: !Ref ElasticFileSystem
+            SecurityGroups:
+            - !Ref EFSSecurityGroup
+            SubnetId:
+                Fn::ImportValue: !Sub ${NetworkStack}:PrivateSubnetOne
+    ElasticFileSystemMountTarget1:
+        Type: AWS::EFS::MountTarget
+        Properties:
+            FileSystemId: !Ref ElasticFileSystem
+            SecurityGroups:
+            - !Ref EFSSecurityGroup
+            SubnetId: 
+                Fn::ImportValue: !Sub ${NetworkStack}:PrivateSubnetTwo
+
+Outputs:
+    ElasticFileSystem:
+        Description: Elastic Storage for this stack.
+        Value: !Ref ElasticFileSystem
+        Export:
+            Name: !Sub ${EnvironmentName}:ElasticFileSystem
+    ElasticFileSystemDnsName:
+        Description: DNS name for the Amazon EFS file system.
+        Value: !Join [ '.', [ !Ref ElasticFileSystem, 'efs', !Ref 'AWS::Region', 'amazonaws', 'com' ] ]

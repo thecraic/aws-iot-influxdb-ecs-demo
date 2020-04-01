@@ -1,0 +1,307 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: This template creates
+     An External, public facing load balancer, for forwarding public traffic to containers. 
+     An S3 Bucket to store the static files for the Console-App. 
+     A public facing CloudFront distribution to forward traffic to the load balancer.
+Parameters:
+  NetworkStack:
+    Type: String
+    Default: base-vpc-network
+    Description: The name of the network where we deploy these resources
+    
+  EnvironmentName:
+    Type: String
+    Default: demo
+    Description: The name of the environment to add this load balancer to
+
+  ACMCertificateIdentifier:
+    Description:    The AWS Certificate Manager (ACM) certificate identifier.
+    Type:           String
+    Default:        "1234567890abcdefgh"
+
+  IPV6Enabled:
+    Description:    Should CloudFront to respond to IPv6 DNS requests with an IPv6 address for your distribution.
+    Type:           String
+    Default:        "true"
+    AllowedValues:
+      - true
+      - false
+
+  OriginProtocolPolicy:
+    Description:    CloudFront Origin Protocol Policy to apply to your origin.
+    Type:           String
+    Default:        "http-only"
+    AllowedValues:
+      - http-only
+      - match-viewer
+      - https-only
+  
+  Compress:
+    Description:    CloudFront Origin Protocol Policy to apply to your origin.
+    Type:           String
+    Default:        "false"
+    AllowedValues:
+      - true
+      - false
+
+  DefaultTTL:
+    Description:    The default time in seconds that objects stay in CloudFront caches before CloudFront forwards another request to your custom origin. By default, AWS CloudFormation specifies 86400 seconds (one day).
+    Type:           String
+    Default:        "0"
+
+  MaxTTL:
+    Description:    The maximum time in seconds that objects stay in CloudFront caches before CloudFront forwards another request to your custom origin. By default, AWS CloudFormation specifies 31536000 seconds (one year).
+    Type:           String
+    Default:        "0"
+
+  MinTTL:
+    Description:    The minimum amount of time that you want objects to stay in the cache before CloudFront queries your origin to see whether the object has been updated.
+    Type:           String
+    Default:        "0"
+
+  SmoothStreaming:
+    Description:    Indicates whether to use the origin that is associated with this cache behavior to distribute media files in the Microsoft Smooth Streaming format.
+    Type:           String
+    Default:        "false"
+    AllowedValues:
+      - true
+      - false
+
+  QueryString:
+    Description:    CIndicates whether you want CloudFront to forward query strings to the origin that is associated with this cache behavior.
+    Type:           String
+    Default:        "true"
+    AllowedValues:
+      - true
+      - false
+
+  ForwardCookies:
+    Description:    Forwards specified cookies to the origin of the cache behavior.
+    Type:           String
+    Default:        "all"
+    AllowedValues:
+      - all
+      - whitelist
+      - none
+
+  ViewerProtocolPolicy:
+    Description:    The protocol that users can use to access the files in the origin that you specified in the TargetOriginId property when the default cache behavior is applied to a request.
+    Type:           String
+    Default:        "redirect-to-https"
+    AllowedValues:
+      - redirect-to-https
+      - allow-all
+      - https-only
+
+  PriceClass:
+    Description:    The price class that corresponds with the maximum price that you want to pay for CloudFront service. If you specify PriceClass_All, CloudFront responds to requests for your objects from all CloudFront edge locations.
+    Type:           String
+    Default:        "PriceClass_All"
+    AllowedValues:
+      - PriceClass_All
+      - PriceClass_100
+      - PriceClass_200
+
+  SslSupportMethod:
+    Description:    Specifies how CloudFront serves HTTPS requests.
+    Type:           String
+    Default:        "sni-only"
+    AllowedValues:
+      - sni-only
+      - vip
+
+  MinimumProtocolVersion:
+    Description:    The minimum version of the SSL protocol that you want CloudFront to use for HTTPS connections.
+    Type:           String
+    Default:        "TLSv1"
+    AllowedValues:
+      - TLSv1
+      - TLSv1.2_2018
+      - TLSv1.1_2016
+      - TLSv1_2016
+      - SSLv3
+
+  OriginKeepaliveTimeout:
+    Description:    You can create a custom keep-alive timeout. All timeout units are in seconds. The default keep-alive timeout is 5 seconds, but you can configure custom timeout lengths. The minimum timeout length is 1 second; the maximum is 60 seconds.
+    Type:           String
+    Default:        "60"
+
+  OriginReadTimeout:
+    Description:    You can create a custom origin read timeout. All timeout units are in seconds. The default origin read timeout is 30 seconds, but you can configure custom timeout lengths. The minimum timeout length is 4 seconds; the maximum is 60 seconds.
+    Type:           String
+    Default:        "30"
+
+
+Resources:
+  EcsSecurityGroupIngressFromPublicALB:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Ingress from the public ALB
+      GroupId:
+        Fn::ImportValue: !Sub ${EnvironmentName}:ContainerSecurityGroup
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref 'PublicLoadBalancerSG'
+
+  # Public load balancer, hosted in public subnets that is accessible
+  # to the public, and is intended to route traffic to one or more public
+  # facing services. This is used for accepting traffic from the public
+  # internet and directing it to public facing microservices
+  PublicLoadBalancerSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access to the public facing load balancer
+      VpcId:
+        Fn::ImportValue: !Sub ${NetworkStack}:VpcId
+      SecurityGroupIngress:
+          # Allow access to ALB from anywhere on the internet
+          - CidrIp: 0.0.0.0/0
+            IpProtocol: -1
+  PublicLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+      - Key: idle_timeout.timeout_seconds
+        Value: '30'
+      Subnets:
+        # The load balancer is placed into the public subnets, so that traffic
+        # from the internet can reach the load balancer directly via the internet gateway
+        - Fn::ImportValue: !Sub ${NetworkStack}:PublicSubnetOne
+        - Fn::ImportValue: !Sub ${NetworkStack}:PublicSubnetTwo
+      SecurityGroups: [!Ref 'PublicLoadBalancerSG']
+
+
+  # A dummy target group is used to setup the ALB to just drop traffic
+  # initially, before any real service target groups have been added.
+  DummyTargetGroupPublic:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /ping
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 20
+      HealthyThresholdCount: 5
+      Port: 8086
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId:
+        Fn::ImportValue: !Sub ${NetworkStack}:VpcId
+  PublicLoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn:
+      - PublicLoadBalancer
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref 'DummyTargetGroupPublic'
+          Type: 'forward'
+      LoadBalancerArn: !Ref 'PublicLoadBalancer'
+      Port: 80
+      Protocol: HTTP
+
+  OriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub Static assets in ${AWS::StackName}
+    
+  WebBucket:
+    Type: AWS::S3::Bucket
+    BucketName: !Sub 'aws-iot-influxdb-ecs-${EnvironmentName}'
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DependsOn: OriginAccessIdentity
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+            Resource: !Join
+              - ""
+              - - !GetAtt WebBucket.Arn
+                - "/*"
+            Principal:
+              CanonicalUser: !GetAtt OriginAccessIdentity.S3CanonicalUserId
+
+
+  # CLOUDFRONT DISTRIBUTION
+  CloudFrontDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        Comment: 'Cloudfront Distribution pointing ALB Origin'
+        Origins:
+          - DomainName: !GetAtt 'PublicLoadBalancer.DNSName'
+            Id: !Ref 'PublicLoadBalancer'
+            CustomOriginConfig:
+              HTTPPort: '80'
+              HTTPSPort: '443'
+              OriginProtocolPolicy: !Ref 'OriginProtocolPolicy'
+              OriginKeepaliveTimeout: !Ref 'OriginKeepaliveTimeout'
+              OriginReadTimeout: !Ref 'OriginReadTimeout'
+              OriginSSLProtocols:
+                - TLSv1
+                - TLSv1.1
+                - TLSv1.2
+                - SSLv3
+          - DomainName: !GetAtt WebBucket.DomainName
+            Id: !Ref 'WebBucket'
+            S3OriginConfig:
+              OriginAccessIdentity: !Join
+                - /
+                - - origin-access-identity
+                  - cloudfront
+                  - !Ref OriginAccessIdentity
+                
+        Enabled: true
+        HttpVersion: 'http2'
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+            - DELETE
+            - OPTIONS
+            - PATCH
+            - POST
+            - PUT
+          Compress: !Ref 'Compress'
+          DefaultTTL: !Ref 'DefaultTTL'
+          MaxTTL: !Ref 'MaxTTL'
+          MinTTL: !Ref 'MinTTL'
+          SmoothStreaming: 'false'
+          TargetOriginId: !Ref 'PublicLoadBalancer'
+          ForwardedValues:
+            QueryString: !Ref 'QueryString'
+            Cookies:
+              Forward: !Ref 'ForwardCookies'
+            Headers:
+              - '*'
+          ViewerProtocolPolicy: !Ref 'ViewerProtocolPolicy'
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: 'true'
+
+
+Outputs:
+  PublicListener:
+    Description: The ARN of the public load balancer's Listener
+    Value: !Ref PublicLoadBalancerListener
+    Export:
+      Name: !Sub ${EnvironmentName}:PublicListener
+  ExternalUrl:
+    Description: The url of the external load balancer
+    Value: !Sub http://${PublicLoadBalancer.DNSName}
+    Export:
+      Name: !Sub ${EnvironmentName}:ExternalUrl
+  CloudFrontEndpoint:
+    Description: "Endpoint for Cloudfront Distribution"
+    Value:       !Sub https://${CloudFrontDistribution.DomainName}
+    Export:
+      Name:      !Sub '${EnvironmentName}-cloudfront-distribution'
+  WebBucketArn:
+    Description: ARN of S3 bucket hosting the website
+    Value: !GetAtt WebBucket.Arn
+    Export:
+      Name: !Sub '${EnvironmentName}WebBucketArn'
